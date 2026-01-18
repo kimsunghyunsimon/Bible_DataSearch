@@ -7,8 +7,6 @@ import re
 # ---------------------------------------------------------
 # 1. 설정: 통합 규칙 및 불용어
 # ---------------------------------------------------------
-
-# (1) 이 단어들은 이걸로 합친다 (Merge Rules)
 MERGE_RULES = {
     "이르시되": "이르되",
     "가라사대": "이르되",
@@ -16,27 +14,22 @@ MERGE_RULES = {
     "자들": "자"
 }
 
-# (2) 무조건 제외할 단어 (Exact Match)
-# [수정됨] '이에' 추가 완료
 STOPWORDS_EXACT = {
     "위하", "것이", "너희", "너희가", "너희는", "내가", "네가",
     "그", "이", "저", "내", "네", "나", "너", "우리",
     "있다", "있는", "있어", "하니", "하나", "하라", "이에"
 }
 
-# (3) 떼어낼 조사/어미 (긴 것부터)
 SUFFIXES = [
     "하사", "하시니라", "하시매", "하더라", "하니라", "하리로다", 
     "께서", "에게", "으로", "에서", "하고", "이나", "까지", "부터", "이라", "니라",
     "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "로", "께", "여"
 ]
 
-# (4) 패턴으로 제외 (시작+끝 글자 조합)
 IGNORE_STARTS = {'이', '그', '저', '내', '네', '나', '너', '우', '자', '누'}
 IGNORE_ENDS = {'것', '들', '등', '중', '뿐', '쯤', '위', '가', '는', '도', '를', '은'}
 
 def normalize_word(word):
-    """조사 자르기"""
     if len(word) < 2: return word
     for suffix in SUFFIXES:
         if word.endswith(suffix):
@@ -45,12 +38,9 @@ def normalize_word(word):
     return word
 
 def is_stop_pattern(word):
-    """불용어 패턴 필터링"""
     if len(word) not in [2, 3]: return False
-    
     if "너희" in word or "위하" in word: return True
     if word[0] in IGNORE_STARTS and word[-1] in IGNORE_ENDS: return True
-    
     return False
 
 # ---------------------------------------------------------
@@ -96,7 +86,7 @@ def load_data(filepath):
     return df
 
 # ---------------------------------------------------------
-# 3. 핵심 분석 함수
+# 3. 핵심 분석 함수 (검색 로직 업그레이드)
 # ---------------------------------------------------------
 def get_top_words_fast(df, n=10):
     full_text = " ".join(df['text'].tolist())
@@ -105,43 +95,53 @@ def get_top_words_fast(df, n=10):
     final_counter = Counter()
     
     for word, count in raw_counter.items():
-        # (1) 통합 규칙
         if word in MERGE_RULES:
             target_word = MERGE_RULES[word]
             final_counter[target_word] += count
             continue
-            
-        # (2) 조사 자르기
         stem = normalize_word(word)
-        
-        # 통합 규칙 재확인
         if stem in MERGE_RULES:
             target_word = MERGE_RULES[stem]
             final_counter[target_word] += count
             continue
-
-        # (3) 불용어/패턴 필터링
         if stem in STOPWORDS_EXACT or is_stop_pattern(stem) or is_stop_pattern(word):
             continue
-            
         if len(stem) > 1:
             final_counter[stem] += count
             
     return final_counter.most_common(n)
 
 def search_word_in_bible(df, keyword):
-    count = 0
     results = []
     keyword = keyword.strip()
-    if not keyword: return 0, []
+    if not keyword: return 0, [], ""
 
-    for _, row in df.iterrows():
-        text = row['text']
-        c = text.count(keyword)
-        if c > 0:
-            count += c
-            results.append(f"[{row['book']} {row['chapter']}:{row['verse']}] {text}")
-    return count, results
+    # [기능 추가] '+' 기호가 있으면 AND 검색 (예: 사랑+믿음)
+    if '+' in keyword:
+        # '+' 기준으로 단어 쪼개기 (공백 제거)
+        keywords = [k.strip() for k in keyword.split('+') if k.strip()]
+        
+        count = 0
+        for _, row in df.iterrows():
+            text = row['text']
+            # 모든 키워드가 다 들어있는지 확인 (all)
+            if all(k in text for k in keywords):
+                count += 1 # 구절 수 카운트
+                results.append(f"[{row['book']} {row['chapter']}:{row['verse']}] {text}")
+        
+        return count, results, "verse" # 결과 타입: 구절 수
+
+    # 기존 단일 단어 검색
+    else:
+        count = 0
+        for _, row in df.iterrows():
+            text = row['text']
+            c = text.count(keyword)
+            if c > 0:
+                count += c
+                results.append(f"[{row['book']} {row['chapter']}:{row['verse']}] {text}")
+        
+        return count, results, "word" # 결과 타입: 단어 횟수
 
 # ---------------------------------------------------------
 # 4. UI 구성
@@ -169,28 +169,32 @@ if not df.empty:
 
     with tab1:
         st.subheader("가장 자주 등장하는 단어 Top 10")
-        
         st.markdown("""
         > **ℹ️ 분석 기준 안내**
-        > * **합산 카운트:** '사람들'은 **'사람'**으로, '이르시되'는 **'이르되'**로 합쳐서 계산했습니다.
-        > * **불용어 제외:** '이에', '이/그/저' 등의 지시대명사와 '것/들/위하' 등의 불용어는 통계에서 뺐습니다.
+        > * **합산 카운트:** '사람들' → '사람', '이르시되' → '이르되'
+        > * **불용어 제외:** '이에', '이/그/저' 등 지시대명사, '것/들/위하' 등
         """)
         
         if st.button("분석 시작", key="btn_top"):
             top_list = get_top_words_fast(target_df, 10)
-            
             top_df = pd.DataFrame(top_list, columns=["단어", "빈도수"])
             top_df.index = top_df.index + 1
-            
-            # [수정됨] 그래프 제거하고 표만 깔끔하게 출력
             st.table(top_df)
 
     with tab2:
-        st.subheader("단어 빈도수 검색")
+        st.subheader("단어 빈도수 및 상세 검색")
+        st.caption("💡 팁: 두 단어가 모두 들어간 구절을 찾으려면 **+**를 쓰세요. (예: **예수+사랑**)")
+        
         kwd = st.text_input("검색어 입력")
         if kwd:
-            cnt, vss = search_word_in_bible(target_df, kwd)
-            st.success(f"'{kwd}' 포함 총 **{cnt}번** 등장")
+            cnt, vss, r_type = search_word_in_bible(target_df, kwd)
+            
+            # 결과 표시에 따라 문구 변경
+            if r_type == "verse":
+                st.success(f"조건을 모두 만족하는 구절은 총 **{cnt}절** 발견되었습니다.")
+            else:
+                st.success(f"'{kwd}' 단어는 총 **{cnt}번** 등장합니다.")
+            
             if vss:
                 with st.expander("구절 보기"):
                     for v in vss: st.text(v)
