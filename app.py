@@ -7,19 +7,17 @@ import re
 # ---------------------------------------------------------
 # 1. 한국어 조사/어미 처리 및 불용어 로직
 # ---------------------------------------------------------
-
 SUFFIXES = [
     "하사", "하시니라", "하시매", "하더라", "하니라", "하리로다", 
     "께서", "에게", "으로", "에서", "하고", "이나", "까지", "부터", "이라", "니라",
     "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "로", "께", "여"
 ]
 
-# 패턴 필터링용 집합
 IGNORE_STARTS = {'이', '그', '저', '내', '네', '나', '너', '우', '자', '누'}
 IGNORE_ENDS = {'것', '들', '등', '중', '뿐', '쯤', '위', '가', '는', '도', '를', '은'}
 
 def normalize_word(word):
-    """조사 자르기 (여호와께서 -> 여호와)"""
+    """조사 자르기"""
     if len(word) < 2: return word
     for suffix in SUFFIXES:
         if word.endswith(suffix):
@@ -28,28 +26,15 @@ def normalize_word(word):
     return word
 
 def is_stop_pattern(word):
-    """
-    불용어 필터링 로직:
-    1. 2~3글자 단어 중 특정 패턴이나 단어가 포함된 경우 제외
-    """
-    # 길이가 2~3글자가 아니면 일단 통과 (길거나 아주 짧은 단어는 별도 로직)
-    if len(word) not in [2, 3]:
-        return False
+    """불용어 필터링"""
+    if len(word) not in [2, 3]: return False
+    
+    # 사용자 요청 제외 단어
+    if "너희" in word or "것이" in word: return True
 
-    # [추가된 부분] 사용자 요청: '너희', '것이'가 포함되어 있으면 무조건 제외
-    # 예: '너희', '너희가', '것이', '이것이' 등 모두 걸러짐
-    if "너희" in word or "것이" in word:
-        return True
-
-    # 기존 패턴 로직: (이, 그, 저...) + (것, 들, 은...) 조합 제외
-    if word[0] in IGNORE_STARTS:
-        if word[-1] in IGNORE_ENDS:
-            return True
-
-    # 자주 나오는 성경 말투 제외
-    if word in ["가라사대", "이르시되", "대답하여", "있느니라", "하였더라", "하더라"]:
-        return True
-        
+    if word[0] in IGNORE_STARTS and word[-1] in IGNORE_ENDS: return True
+    
+    if word in ["가라사대", "이르시되", "대답하여", "있느니라", "하였더라", "하더라"]: return True
     return False
 
 # ---------------------------------------------------------
@@ -83,19 +68,17 @@ def load_data(filepath):
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
-    except FileNotFoundError:
-        return pd.DataFrame()
+    except FileNotFoundError: return pd.DataFrame()
 
     rows = []
     for book, chapters in data.items():
         for chapter, verses in chapters.items():
             for verse, content in verses.items():
-                text = content.get("text", "")
                 rows.append({
                     "book": book,
                     "chapter": int(chapter),
                     "verse": int(verse),
-                    "text": text,
+                    "text": content.get("text", ""),
                     "testament": get_testament(book)
                 })
     if not rows: return pd.DataFrame()
@@ -105,24 +88,26 @@ def load_data(filepath):
     return df
 
 # ---------------------------------------------------------
-# 4. 분석 함수
+# 4. 분석 함수 (성능 최적화됨)
 # ---------------------------------------------------------
 def get_top_words(df, n=10):
-    full_text = " ".join(df['text'].tolist())
-    words = re.findall(r'\w+', full_text)
+    counter = Counter()
     
-    processed_words = []
-    for w in words:
-        # 1. 조사를 떼어내서 기본형 만들기
-        stem = normalize_word(w)
+    # [최적화] 전체를 합치지 않고, 한 줄씩 읽으면서 카운트 업데이트 (메모리 절약)
+    for text in df['text']:
+        words = re.findall(r'\w+', text)
+        processed_words = []
+        for w in words:
+            stem = normalize_word(w)
+            # 불용어 체크
+            if not is_stop_pattern(w) and not is_stop_pattern(stem):
+                if len(stem) > 1:
+                    processed_words.append(stem)
         
-        # 2. 불용어 패턴 체크 (원본 단어 w와 잘린 단어 stem 모두 체크)
-        # 예: '너희가' -> stem은 '너희' -> '너희'가 패턴에 걸리므로 제외됨
-        if not is_stop_pattern(w) and not is_stop_pattern(stem):
-            if len(stem) > 1: 
-                processed_words.append(stem)
+        # 한 구절 처리가 끝나면 바로 카운터에 반영
+        counter.update(processed_words)
     
-    return Counter(processed_words).most_common(n)
+    return counter.most_common(n)
 
 def search_word_in_bible(df, keyword):
     count = 0
@@ -164,12 +149,18 @@ if not df.empty:
 
     with tab1:
         st.subheader("가장 자주 등장하는 단어 Top 10")
-        st.caption("※ 제외됨: 너희, 것이, 이/그/저+것/들 등 (2~3음절)")
+        st.caption("※ 제외됨: 너희, 것이, 이/그/저+것/들 등")
         
         if st.button("분석 시작", key="btn_top"):
-            with st.spinner("분석 중..."):
+            with st.spinner("방대한 데이터를 분석 중입니다... 잠시만 기다려주세요."):
                 top_list = get_top_words(target_df, 10)
+                
+                # 데이터프레임 생성
                 top_df = pd.DataFrame(top_list, columns=["단어", "빈도수"])
+                
+                # [수정됨] 랭킹을 1부터 시작하도록 인덱스 조정
+                top_df.index = top_df.index + 1
+                
                 col1, col2 = st.columns([1, 2])
                 with col1: st.table(top_df)
                 with col2: st.bar_chart(top_df.set_index("단어"))
@@ -182,4 +173,6 @@ if not df.empty:
             st.success(f"'{kwd}' 포함 총 **{cnt}번** 등장")
             if vss:
                 with st.expander("구절 보기"):
+                    # 구절 리스트도 보기 좋게 번호 매김 없이 출력하거나 DataFrame으로 변환 가능
+                    # 여기서는 깔끔한 텍스트 리스트로 유지
                     for v in vss: st.text(v)
