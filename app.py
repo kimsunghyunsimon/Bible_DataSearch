@@ -5,8 +5,19 @@ from collections import Counter
 import re
 
 # ---------------------------------------------------------
-# 1. 설정: 통합 규칙 및 불용어
+# 1. 설정: 성경 책 이름 연결 (Alias) 및 통합 규칙
 # ---------------------------------------------------------
+
+# [추가됨] 성경 책 이름 변환 (JSON의 약어 -> 표준 이름)
+# 여기에 "창": "창세기" 등을 추가하면 다른 약어도 해결됩니다.
+BOOK_ALIASES = {
+    "눅": "누가복음",
+    # 필요하다면 아래처럼 추가 가능
+    # "마": "마태복음",
+    # "행": "사도행전", 
+}
+
+# (1) 단어 통합 규칙 (이 단어들은 이걸로 합친다)
 MERGE_RULES = {
     "이르시되": "이르되",
     "가라사대": "이르되",
@@ -14,18 +25,21 @@ MERGE_RULES = {
     "자들": "자"
 }
 
+# (2) 무조건 제외할 단어 (Exact Match)
 STOPWORDS_EXACT = {
     "위하", "것이", "너희", "너희가", "너희는", "내가", "네가",
     "그", "이", "저", "내", "네", "나", "너", "우리",
     "있다", "있는", "있어", "하니", "하나", "하라", "이에"
 }
 
+# (3) 떼어낼 조사/어미 (긴 것부터)
 SUFFIXES = [
     "하사", "하시니라", "하시매", "하더라", "하니라", "하리로다", 
     "께서", "에게", "으로", "에서", "하고", "이나", "까지", "부터", "이라", "니라",
     "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "로", "께", "여"
 ]
 
+# (4) 패턴으로 제외
 IGNORE_STARTS = {'이', '그', '저', '내', '네', '나', '너', '우', '자', '누'}
 IGNORE_ENDS = {'것', '들', '등', '중', '뿐', '쯤', '위', '가', '는', '도', '를', '은'}
 
@@ -44,7 +58,7 @@ def is_stop_pattern(word):
     return False
 
 # ---------------------------------------------------------
-# 2. 데이터 로드
+# 2. 데이터 로드 및 전처리
 # ---------------------------------------------------------
 OT_BOOKS = [
     "창세기", "출애굽기", "레위기", "민수기", "신명기", "여호수아", "사사기", "룻기",
@@ -70,23 +84,39 @@ def load_data(filepath):
 
     rows = []
     for book, chapters in data.items():
+        # [수정됨] 책 이름 변환 (눅 -> 누가복음)
+        # BOOK_ALIASES에 있는 이름이면 바꿔서 저장, 없으면 원래 이름 사용
+        normalized_book_name = BOOK_ALIASES.get(book, book)
+        
         for chapter, verses in chapters.items():
             for verse, content in verses.items():
                 rows.append({
-                    "book": book,
+                    "book": normalized_book_name,
                     "chapter": int(chapter),
                     "verse": int(verse),
                     "text": content.get("text", ""),
-                    "testament": "구약" if book in OT_BOOKS else ("신약" if book in NT_BOOKS else "기타")
+                    "testament": "구약" if normalized_book_name in OT_BOOKS else ("신약" if normalized_book_name in NT_BOOKS else "기타")
                 })
+                
     if not rows: return pd.DataFrame()
     df = pd.DataFrame(rows)
+    
+    # 정렬을 위해 카테고리화 (표준 순서 적용)
     df['book'] = pd.Categorical(df['book'], categories=ALL_BOOKS_ORDER, ordered=True)
-    df = df.sort_values(by=['book', 'chapter', 'verse']).reset_index(drop=True)
+    
+    # 매칭 안 되는 책(nan) 방지 및 확인
+    if df['book'].isnull().any():
+        unknowns = df[df['book'].isnull()]['book'].unique() # 여기선 원본값을 잃어서 확인 어려울 수 있음
+        # 안전하게 정렬 수행
+        df = df.sort_values(by=['book', 'chapter', 'verse']).reset_index(drop=True)
+        # nan을 문자열 '기타' 등으로 채우거나 제거 (여기선 제거하지 않고 유지하되 맨 뒤로 보냄)
+    else:
+        df = df.sort_values(by=['book', 'chapter', 'verse']).reset_index(drop=True)
+        
     return df
 
 # ---------------------------------------------------------
-# 3. 핵심 분석 함수 (검색 로직 업그레이드)
+# 3. 핵심 분석 함수
 # ---------------------------------------------------------
 def get_top_words_fast(df, n=10):
     full_text = " ".join(df['text'].tolist())
@@ -112,26 +142,25 @@ def get_top_words_fast(df, n=10):
     return final_counter.most_common(n)
 
 def search_word_in_bible(df, keyword):
-    results = []
     keyword = keyword.strip()
     if not keyword: return 0, [], ""
+    
+    results = []
 
-    # [기능 추가] '+' 기호가 있으면 AND 검색 (예: 사랑+믿음)
+    # AND 검색 (A+B)
     if '+' in keyword:
-        # '+' 기준으로 단어 쪼개기 (공백 제거)
         keywords = [k.strip() for k in keyword.split('+') if k.strip()]
-        
         count = 0
         for _, row in df.iterrows():
             text = row['text']
-            # 모든 키워드가 다 들어있는지 확인 (all)
             if all(k in text for k in keywords):
-                count += 1 # 구절 수 카운트
-                results.append(f"[{row['book']} {row['chapter']}:{row['verse']}] {text}")
-        
-        return count, results, "verse" # 결과 타입: 구절 수
+                count += 1
+                # 책 이름이 혹시 nan이면 처리
+                book_name = row['book'] if pd.notna(row['book']) else "알수없음"
+                results.append(f"[{book_name} {row['chapter']}:{row['verse']}] {text}")
+        return count, results, "verse"
 
-    # 기존 단일 단어 검색
+    # 단일 검색
     else:
         count = 0
         for _, row in df.iterrows():
@@ -139,9 +168,9 @@ def search_word_in_bible(df, keyword):
             c = text.count(keyword)
             if c > 0:
                 count += c
-                results.append(f"[{row['book']} {row['chapter']}:{row['verse']}] {text}")
-        
-        return count, results, "word" # 결과 타입: 단어 횟수
+                book_name = row['book'] if pd.notna(row['book']) else "알수없음"
+                results.append(f"[{book_name} {row['chapter']}:{row['verse']}] {text}")
+        return count, results, "word"
 
 # ---------------------------------------------------------
 # 4. UI 구성
@@ -159,7 +188,9 @@ if not df.empty:
     if scope == "구약만": target_df = df[df['testament'] == "구약"]
     elif scope == "신약만": target_df = df[df['testament'] == "신약"]
     elif scope == "책 별로 선택":
-        available_books = [b for b in ALL_BOOKS_ORDER if b in df['book'].unique()]
+        # nan 제외하고 정렬된 리스트만 표시
+        valid_books = df['book'].dropna().unique()
+        available_books = [b for b in ALL_BOOKS_ORDER if b in valid_books]
         sel = st.sidebar.selectbox("성경책 선택", available_books)
         target_df = df[df['book'] == sel]
 
@@ -189,7 +220,6 @@ if not df.empty:
         if kwd:
             cnt, vss, r_type = search_word_in_bible(target_df, kwd)
             
-            # 결과 표시에 따라 문구 변경
             if r_type == "verse":
                 st.success(f"조건을 모두 만족하는 구절은 총 **{cnt}절** 발견되었습니다.")
             else:
