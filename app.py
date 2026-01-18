@@ -12,15 +12,16 @@ import re
 MERGE_RULES = {
     "이르시되": "이르되",
     "가라사대": "이르되",
-    "사람들": "사람",  # [추가됨] 사람들 -> 사람으로 통합
-    "자들": "자"       # (선택) 자들 -> 자 (필요 없으면 삭제 가능)
+    "사람들": "사람",
+    "자들": "자"
 }
 
 # (2) 무조건 제외할 단어 (Exact Match)
+# [수정됨] '이에' 추가 완료
 STOPWORDS_EXACT = {
     "위하", "것이", "너희", "너희가", "너희는", "내가", "네가",
     "그", "이", "저", "내", "네", "나", "너", "우리",
-    "있다", "있는", "있어", "하니", "하나", "하라"
+    "있다", "있는", "있어", "하니", "하나", "하라", "이에"
 }
 
 # (3) 떼어낼 조사/어미 (긴 것부터)
@@ -95,7 +96,7 @@ def load_data(filepath):
     return df
 
 # ---------------------------------------------------------
-# 3. 핵심 분석 함수 (단어장 방식 최적화)
+# 3. 핵심 분석 함수
 # ---------------------------------------------------------
 def get_top_words_fast(df, n=10):
     full_text = " ".join(df['text'].tolist())
@@ -104,7 +105,7 @@ def get_top_words_fast(df, n=10):
     final_counter = Counter()
     
     for word, count in raw_counter.items():
-        # (1) 통합 규칙 적용 (사람들 -> 사람, 이르시되 -> 이르되)
+        # (1) 통합 규칙
         if word in MERGE_RULES:
             target_word = MERGE_RULES[word]
             final_counter[target_word] += count
@@ -113,7 +114,7 @@ def get_top_words_fast(df, n=10):
         # (2) 조사 자르기
         stem = normalize_word(word)
         
-        # 통합 규칙 재확인 (조사를 뗀 후에도 통합 규칙에 걸릴 수 있음)
+        # 통합 규칙 재확인
         if stem in MERGE_RULES:
             target_word = MERGE_RULES[stem]
             final_counter[target_word] += count
@@ -169,11 +170,10 @@ if not df.empty:
     with tab1:
         st.subheader("가장 자주 등장하는 단어 Top 10")
         
-        # [추가된 설명 부분]
         st.markdown("""
         > **ℹ️ 분석 기준 안내**
         > * **합산 카운트:** '사람들'은 **'사람'**으로, '이르시되'는 **'이르되'**로 합쳐서 계산했습니다.
-        > * **불용어 제외:** '이/그/저' 등의 지시대명사와 '것/들/위하' 등의 불용어는 통계에서 뺐습니다.
+        > * **불용어 제외:** '이에', '이/그/저' 등의 지시대명사와 '것/들/위하' 등의 불용어는 통계에서 뺐습니다.
         """)
         
         if st.button("분석 시작", key="btn_top"):
@@ -182,9 +182,8 @@ if not df.empty:
             top_df = pd.DataFrame(top_list, columns=["단어", "빈도수"])
             top_df.index = top_df.index + 1
             
-            col1, col2 = st.columns([1, 2])
-            with col1: st.table(top_df)
-            with col2: st.bar_chart(top_df.set_index("단어"))
+            # [수정됨] 그래프 제거하고 표만 깔끔하게 출력
+            st.table(top_df)
 
     with tab2:
         st.subheader("단어 빈도수 검색")
