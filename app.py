@@ -5,57 +5,49 @@ from collections import Counter
 import re
 
 # ---------------------------------------------------------
-# 1. 한국어 조사/어미 처리 로직 (핵심 수정 부분)
+# 1. 한국어 조사/어미 처리 및 불용어 로직
 # ---------------------------------------------------------
 
-# (1) 떼어낼 말 꼬리들 (길이 순서대로 정렬해야 긴 것부터 잘립니다)
-# 여기에 계속 추가하면 '하나님께', '하나님으로' 등을 더 잘 합칠 수 있습니다.
 SUFFIXES = [
-    "하사", "하시니라", "하시매", "하더라", "하니라", "하리로다", # 서술격 어미
-    "께서", "에게", "으로", "에서", "하고", "이나", "까지", "부터", "이라", "니라", # 긴 조사
-    "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "로", "께", "여"  # 짧은 조사
+    "하사", "하시니라", "하시매", "하더라", "하니라", "하리로다", 
+    "께서", "에게", "으로", "에서", "하고", "이나", "까지", "부터", "이라", "니라",
+    "은", "는", "이", "가", "을", "를", "의", "와", "과", "도", "로", "께", "여"
 ]
 
-# (2) 제외할 패턴 (앞글자 + 뒷글자 조합)
-# 예: '이'로 시작하고 '것'으로 끝나는 2~3글자 -> 제거
+# 패턴 필터링용 집합
 IGNORE_STARTS = {'이', '그', '저', '내', '네', '나', '너', '우', '자', '누'}
 IGNORE_ENDS = {'것', '들', '등', '중', '뿐', '쯤', '위', '가', '는', '도', '를', '은'}
 
 def normalize_word(word):
-    """
-    단어의 꼬리(조사)를 자르고 기본형으로 만듭니다.
-    예: 여호와께서 -> 여호와, 하나님이 -> 하나님
-    """
-    original_word = word
-    # 길이가 2글자 이상일 때만 조사를 떼어냅니다 (한 글자 단어 보호)
-    if len(word) < 2:
-        return word
-        
+    """조사 자르기 (여호와께서 -> 여호와)"""
+    if len(word) < 2: return word
     for suffix in SUFFIXES:
         if word.endswith(suffix):
-            # 조사를 뗐을 때 너무 짧아지면(1글자) 원래대로 둘지, 뗄지 결정
-            # 여기서는 조사를 떼어냅니다. (예: '왕이' -> '왕')
             stem = word[:-len(suffix)]
-            if len(stem) >= 1: 
-                return stem
+            if len(stem) >= 1: return stem
     return word
 
 def is_stop_pattern(word):
     """
-    사용자 요청 패턴 필터링:
-    (이, 그, 저, 내...) + (는, 가, 것, 들...) 형태의 2~3음절 단어 제외
+    불용어 필터링 로직:
+    1. 2~3글자 단어 중 특정 패턴이나 단어가 포함된 경우 제외
     """
-    # 1. 길이 체크 (2~3글자)
-    if len(word) in [2, 3]:
-        # 2. 앞글자 체크
-        if word[0] in IGNORE_STARTS:
-            # 3. 뒷글자 체크 (혹은 꼬리를 뗀 상태에서도 체크)
-            if word[-1] in IGNORE_ENDS:
-                return True
-            # 예: '그가', '이것', '저희' 등
-            
-    # 추가로 제외하고 싶은 특정 단어들
-    if word in ["가라사대", "이르시되", "대답하여", "있느니라", "하였더라"]:
+    # 길이가 2~3글자가 아니면 일단 통과 (길거나 아주 짧은 단어는 별도 로직)
+    if len(word) not in [2, 3]:
+        return False
+
+    # [추가된 부분] 사용자 요청: '너희', '것이'가 포함되어 있으면 무조건 제외
+    # 예: '너희', '너희가', '것이', '이것이' 등 모두 걸러짐
+    if "너희" in word or "것이" in word:
+        return True
+
+    # 기존 패턴 로직: (이, 그, 저...) + (것, 들, 은...) 조합 제외
+    if word[0] in IGNORE_STARTS:
+        if word[-1] in IGNORE_ENDS:
+            return True
+
+    # 자주 나오는 성경 말투 제외
+    if word in ["가라사대", "이르시되", "대답하여", "있느니라", "하였더라", "하더라"]:
         return True
         
     return False
@@ -113,7 +105,7 @@ def load_data(filepath):
     return df
 
 # ---------------------------------------------------------
-# 4. 분석 함수 (로직 적용됨)
+# 4. 분석 함수
 # ---------------------------------------------------------
 def get_top_words(df, n=10):
     full_text = " ".join(df['text'].tolist())
@@ -121,13 +113,13 @@ def get_top_words(df, n=10):
     
     processed_words = []
     for w in words:
-        # 1. 꼬리 자르기 (여호와께서 -> 여호와)
+        # 1. 조사를 떼어내서 기본형 만들기
         stem = normalize_word(w)
         
-        # 2. 패턴 필터링 (이것, 그가 -> 제외)
+        # 2. 불용어 패턴 체크 (원본 단어 w와 잘린 단어 stem 모두 체크)
+        # 예: '너희가' -> stem은 '너희' -> '너희'가 패턴에 걸리므로 제외됨
         if not is_stop_pattern(w) and not is_stop_pattern(stem):
-            # 의미 있는 단어만 리스트에 추가
-            if len(stem) > 1: # 한 글자 단어도 뺄까요? (필요시 삭제 가능)
+            if len(stem) > 1: 
                 processed_words.append(stem)
     
     return Counter(processed_words).most_common(n)
@@ -172,10 +164,10 @@ if not df.empty:
 
     with tab1:
         st.subheader("가장 자주 등장하는 단어 Top 10")
-        st.caption("※ '여호와께서'는 '여호와'로 합치고, '이것/저것' 등은 제외했습니다.")
+        st.caption("※ 제외됨: 너희, 것이, 이/그/저+것/들 등 (2~3음절)")
         
         if st.button("분석 시작", key="btn_top"):
-            with st.spinner("단어 정제 및 분석 중..."):
+            with st.spinner("분석 중..."):
                 top_list = get_top_words(target_df, 10)
                 top_df = pd.DataFrame(top_list, columns=["단어", "빈도수"])
                 col1, col2 = st.columns([1, 2])
