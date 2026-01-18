@@ -11,7 +11,9 @@ import re
 # (1) 이 단어들은 이걸로 합친다 (Merge Rules)
 MERGE_RULES = {
     "이르시되": "이르되",
-    "가라사대": "이르되",  # (선택사항) 가라사대도 이르되로 합치고 싶으시면 유지, 아니면 이 줄 삭제
+    "가라사대": "이르되",
+    "사람들": "사람",  # [추가됨] 사람들 -> 사람으로 통합
+    "자들": "자"       # (선택) 자들 -> 자 (필요 없으면 삭제 가능)
 }
 
 # (2) 무조건 제외할 단어 (Exact Match)
@@ -45,10 +47,7 @@ def is_stop_pattern(word):
     """불용어 패턴 필터링"""
     if len(word) not in [2, 3]: return False
     
-    # 1. 단어 자체에 포함되면 안 되는 것들
     if "너희" in word or "위하" in word: return True
-
-    # 2. 시작+끝 패턴
     if word[0] in IGNORE_STARTS and word[-1] in IGNORE_ENDS: return True
     
     return False
@@ -96,28 +95,16 @@ def load_data(filepath):
     return df
 
 # ---------------------------------------------------------
-# 3. 핵심 분석 함수 (대폭 최적화됨)
+# 3. 핵심 분석 함수 (단어장 방식 최적화)
 # ---------------------------------------------------------
 def get_top_words_fast(df, n=10):
-    """
-    속도 개선 버전: 
-    1. 전체 텍스트에서 단어를 먼저 추출 (C언어 기반 re 모듈 사용 -> 빠름)
-    2. 중복되는 단어들(vocabulary)에 대해서만 정제 로직 수행 (반복 횟수 급감)
-    """
-    # 1. 전체 텍스트 합치기 (성경 전체 텍스트는 몇 MB 안되므로 메모리 문제 없음)
     full_text = " ".join(df['text'].tolist())
-    
-    # 2. 모든 단어 추출 (raw tokens)
     raw_words = re.findall(r'\w+', full_text)
-    
-    # 3. 일단 센다 (Raw Count)
     raw_counter = Counter(raw_words)
-    
-    # 4. 중복 없이 유니크한 단어들만 꺼내서 정제 로직 수행
     final_counter = Counter()
     
     for word, count in raw_counter.items():
-        # (1) 통합 규칙 적용 (이르시되 -> 이르되)
+        # (1) 통합 규칙 적용 (사람들 -> 사람, 이르시되 -> 이르되)
         if word in MERGE_RULES:
             target_word = MERGE_RULES[word]
             final_counter[target_word] += count
@@ -126,8 +113,13 @@ def get_top_words_fast(df, n=10):
         # (2) 조사 자르기
         stem = normalize_word(word)
         
+        # 통합 규칙 재확인 (조사를 뗀 후에도 통합 규칙에 걸릴 수 있음)
+        if stem in MERGE_RULES:
+            target_word = MERGE_RULES[stem]
+            final_counter[target_word] += count
+            continue
+
         # (3) 불용어/패턴 필터링
-        # 원본 단어(word)나 정제된 단어(stem)가 불용어면 패스
         if stem in STOPWORDS_EXACT or is_stop_pattern(stem) or is_stop_pattern(word):
             continue
             
@@ -142,9 +134,6 @@ def search_word_in_bible(df, keyword):
     keyword = keyword.strip()
     if not keyword: return 0, []
 
-    # 검색은 단순 포함 여부이므로 기존 방식 유지 (속도 충분)
-    # 다만 너무 느리면 str.contains로 벡터화 가능하지만, 
-    # 상세 구절 추출을 위해 loop 유지 (현대 컴퓨터에서 충분히 빠름)
     for _, row in df.iterrows():
         text = row['text']
         c = text.count(keyword)
@@ -179,10 +168,15 @@ if not df.empty:
 
     with tab1:
         st.subheader("가장 자주 등장하는 단어 Top 10")
-        st.caption("※ '이르시되'는 '이르되'로 합산되었습니다.")
+        
+        # [추가된 설명 부분]
+        st.markdown("""
+        > **ℹ️ 분석 기준 안내**
+        > * **합산 카운트:** '사람들'은 **'사람'**으로, '이르시되'는 **'이르되'**로 합쳐서 계산했습니다.
+        > * **불용어 제외:** '이/그/저' 등의 지시대명사와 '것/들/위하' 등의 불용어는 통계에서 뺐습니다.
+        """)
         
         if st.button("분석 시작", key="btn_top"):
-            # 프로그레스 바는 없앴습니다. (순식간에 끝나므로)
             top_list = get_top_words_fast(target_df, 10)
             
             top_df = pd.DataFrame(top_list, columns=["단어", "빈도수"])
