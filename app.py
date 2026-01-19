@@ -16,7 +16,6 @@ BOOK_ALIASES = {
     "롬": "로마서",
     "창": "창세기",
     "출": "출애굽기"
-    # 필요시 계속 추가 가능
 }
 
 MERGE_RULES = {
@@ -135,7 +134,6 @@ def search_word_in_bible(df, keyword):
     if not keyword: return 0, [], ""
     
     results = []
-    # AND 검색
     if '+' in keyword:
         keywords = [k.strip() for k in keyword.split('+') if k.strip()]
         count = 0
@@ -146,7 +144,6 @@ def search_word_in_bible(df, keyword):
                 book_name = row['book'] if pd.notna(row['book']) else "알수없음"
                 results.append(f"[{book_name} {row['chapter']}:{row['verse']}] {text}")
         return count, results, "verse"
-    # 단일 검색
     else:
         count = 0
         for _, row in df.iterrows():
@@ -159,7 +156,7 @@ def search_word_in_bible(df, keyword):
         return count, results, "word"
 
 # ---------------------------------------------------------
-# 4. UI 구성 (모바일 친화적 상단 배치)
+# 4. UI 구성
 # ---------------------------------------------------------
 st.set_page_config(page_title="성경 데이터 분석", layout="wide")
 st.title("📖 성경 빅데이터 분석기")
@@ -167,8 +164,6 @@ st.title("📖 성경 빅데이터 분석기")
 df = load_data("bible_data.json")
 
 if not df.empty:
-    # [수정됨] 사이드바(st.sidebar) 대신 메인 화면 상단에 배치
-    # 가로형(horizontal=True)으로 배치하여 모바일에서 공간 절약
     st.write("### 🔍 검색 범위 설정")
     
     scope = st.radio(
@@ -183,14 +178,12 @@ if not df.empty:
     elif scope == "책 별로 선택":
         valid_books = df['book'].dropna().unique()
         available_books = [b for b in ALL_BOOKS_ORDER if b in valid_books]
-        # 책 선택 메뉴도 바로 아래에 배치
         sel = st.selectbox("성경책을 선택하세요:", available_books)
         target_df = df[df['book'] == sel]
 
-    st.markdown("---") # 구분선
+    st.markdown("---")
     st.info(f"📊 현재 분석 대상: **{scope}** (총 {len(target_df):,} 구절)")
 
-    # 탭 구성
     tab1, tab2 = st.tabs(["🏆 Top 10 단어", "🔎 단어 검색"])
 
     with tab1:
@@ -209,7 +202,18 @@ if not df.empty:
         st.subheader("단어 빈도수 및 상세 검색")
         st.caption("팁: '예수+사랑' 처럼 입력하면 두 단어가 모두 있는 구절을 찾습니다.")
         
-        kwd = st.text_input("검색어 입력 (엔터)")
+        # [수정됨] 입력창과 버튼을 가로로 배치 (비율 4:1)
+        col1, col2 = st.columns([4, 1])
+        
+        with col1:
+            # label_visibility="collapsed"로 라벨을 숨겨서 버튼과 줄을 맞춥니다.
+            kwd = st.text_input("검색어 입력", placeholder="검색어를 입력하세요", label_visibility="collapsed")
+            
+        with col2:
+            # use_container_width=True로 버튼을 꽉 채웁니다.
+            search_btn = st.button("검색", type="primary", use_container_width=True)
+
+        # 엔터를 쳤거나(kwd가 있을 때) OR 버튼을 눌렀을 때 실행
         if kwd:
             cnt, vss, r_type = search_word_in_bible(target_df, kwd)
             
